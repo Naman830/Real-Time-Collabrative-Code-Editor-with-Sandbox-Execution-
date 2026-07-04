@@ -1,7 +1,10 @@
 "use client";
 
-import { useState } from "react";
-import Editor, { OnChange } from "@monaco-editor/react";
+import { useEffect, useRef, useState } from "react";
+import Editor, { OnChange, OnMount } from "@monaco-editor/react";
+import * as Y from "yjs";
+import type { MonacoBinding } from "y-monaco";
+import YjsDebugPanel from "./YjsDebugPanel";
 
 const LANGUAGES = [
   { label: "JavaScript", value: "javascript" },
@@ -36,6 +39,33 @@ export default function CodeEditor() {
   const [language, setLanguage] = useState<string>("javascript");
   const [code, setCode] = useState<string>(DEFAULT_CODE);
   const [runState, setRunState] = useState<RunState>({ status: "idle" });
+
+  // Local-only Yjs doc backing the editor. No provider/network yet — this
+  // just proves the Monaco <-> Yjs binding works within a single tab.
+  const [yDoc] = useState(() => new Y.Doc());
+  const bindingRef = useRef<MonacoBinding | null>(null);
+
+  useEffect(() => {
+    return () => {
+      bindingRef.current?.destroy();
+      yDoc.destroy();
+    };
+  }, [yDoc]);
+
+  const handleEditorMount: OnMount = async (editor) => {
+    const yText = yDoc.getText("monaco");
+    if (yText.length === 0) {
+      yText.insert(0, DEFAULT_CODE);
+    }
+
+    const model = editor.getModel();
+    if (model) {
+      // y-monaco pulls in raw monaco-editor, which touches `window` at
+      // import time — load it client-side only, after the editor mounts.
+      const { MonacoBinding } = await import("y-monaco");
+      bindingRef.current = new MonacoBinding(yText, model, new Set([editor]));
+    }
+  };
 
   const handleEditorChange: OnChange = (value) => {
     setCode(value ?? "");
@@ -102,8 +132,9 @@ export default function CodeEditor() {
         <Editor
           height="100%"
           language={language}
-          value={code}
+          defaultValue={DEFAULT_CODE}
           theme="vs-dark"
+          onMount={handleEditorMount}
           onChange={handleEditorChange}
           options={{
             fontSize: 14,
@@ -183,6 +214,9 @@ export default function CodeEditor() {
           </>
         )}
       </div>
+
+      {/* Temporary debug panel — remove once y-websocket sync lands. */}
+      <YjsDebugPanel doc={yDoc} />
     </div>
   );
 }

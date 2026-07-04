@@ -2,7 +2,7 @@
 
 A collaborative code editor with real-time multi-cursor sync (CRDT-based) and secure sandboxed code execution — built to explore distributed state management and execution isolation at scale.
 
-🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time collaboration (Yjs, WebSocket server, Redis, Postgres) is not built yet.
+🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; Yjs is now bound to the Monaco editor locally (single-tab, no networking yet); WebSocket server, Redis, and Postgres are not wired up yet.
 
 ---
 
@@ -66,6 +66,17 @@ Editing sync needs to be low-latency and always-on — every keystroke matters. 
 ## CRDT vs Operational Transform
 
 *Full write-up to be added once implementation decisions are finalized — this will compare Yjs's CRDT approach against Operational Transform (used by Google Docs), explaining why CRDTs were chosen for this project (no central server required for conflict resolution, simpler offline/reconnect handling) and the tradeoffs involved (larger metadata overhead per edit).*
+
+---
+
+## Real-Time Sync
+
+Yjs is integrated with the Monaco editor in `collab-code-editor/app/components/CodeEditor.tsx`, but **only locally** — there is no provider or network transport wired up yet.
+
+- A `Y.Doc` and `Y.Text` are created per editor session and bound to the Monaco model via `y-monaco`'s `MonacoBinding`, so keystrokes flow into the CRDT.
+- This is single-user, single-tab: edits update the local `Y.Doc`, but nothing is broadcast anywhere.
+- A temporary debug panel (`YjsDebugPanel.tsx`) logs each `Y.Doc` update as a base64-encoded string and shows a running update count, just to make the CRDT's update events visible during development. It's safe to delete once real sync lands.
+- Next step: connect this binding to the standalone WebSocket server in `server/` via `y-websocket` (or an equivalent custom provider) to get actual multi-client sync.
 
 ---
 
