@@ -85,7 +85,20 @@ Open [http://localhost:3000](http://localhost:3000), write some code in the edit
 
 By default the app talks to Piston at `http://localhost:2000`. Override with a `PISTON_API_URL` env var if you're running Piston elsewhere.
 
-*Postgres, Redis, and the WebSocket server aren't wired up yet — setup instructions for those will be added as each comes online.*
+### WebSocket server (standalone, not yet wired to the frontend)
+
+A plain `ws`-based WebSocket server now lives in `server/`, sibling to `collab-code-editor/`. It currently just accepts connections, replies with a `{ type: "welcome", id }` message, and echoes back whatever it receives — no Yjs, rooms, or broadcasting yet. To run it locally:
+
+```bash
+cd server
+npm install
+cp .env.example .env
+npm run dev
+```
+
+It listens on `PORT` from `.env` (default `8080`). The Next.js frontend doesn't talk to it yet — that integration comes with the Yjs sync work.
+
+*Postgres and Redis aren't wired up yet — setup instructions for those will be added as each comes online.*
 
 ---
 
