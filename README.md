@@ -138,6 +138,26 @@ Two persistence-related decisions:
   - 4 seconds was chosen as a middle ground for a pair-programming/interview use case: sessions are typically short-lived and conversational (natural pauses between edits are common), so a few seconds of debounce rarely coincides with a hard crash, while keeping writes infrequent enough not to stress a single shared Postgres connection across many concurrent rooms.
 - **Flush-on-last-disconnect (implemented, see above).** Closes the common-case data-loss window (a room simply going idle) without shortening the debounce window itself. A process crash or `kill -9` mid-session, unrelated to any client disconnecting, is still not covered — that would need a graceful-shutdown hook that flushes every room with a pending timer.
 
+### Manual Test Checklist (Persistence)
+
+No automated tests cover the WS server yet, so verify persistence by hand after touching `server/yjsConnection.js` or the Prisma schema. Run the WS server (`cd server && npm run dev`) and frontend (`cd collab-code-editor && npm run dev`) locally for all of these.
+
+1. **Two separate rooms persist independently**
+   - [ ] Open `/room/room-a`, type distinct content (e.g. `hello-from-a`).
+   - [ ] Open `/room/room-b` in another tab, type different content (e.g. `hello-from-b`).
+   - [ ] Close both tabs, wait 5s (past the 4s debounce), then reopen `/room/room-a` — confirm it shows only `hello-from-a`.
+   - [ ] Reopen `/room/room-b` — confirm it shows only `hello-from-b`, with no cross-contamination between rooms.
+
+2. **Reopening a room after a server restart restores prior content**
+   - [ ] Open a room, type some content, and wait at least 5s (past the 4s debounce) so the snapshot is written to Postgres.
+   - [ ] Stop the WS server (`Ctrl+C`) and start it again (`npm run dev`).
+   - [ ] Reopen the same room URL — confirm the editor loads the content typed before the restart, not a blank document.
+
+3. **Rapid edits followed by immediate disconnect don't lose data**
+   - [ ] Open a room and type or paste a burst of content quickly (well under 4s), then close the tab immediately — before the debounce timer would otherwise fire.
+   - [ ] Reopen the same room in a new tab — confirm all the rapid edits are present (the last-disconnect flush should have written them immediately rather than waiting out the debounce).
+   - [ ] Restart the WS server and reopen the room once more — confirm the same content is still there, verifying it actually reached Postgres and wasn't just served from the in-memory doc.
+
 ---
 
 ## Local Setup / Installation
