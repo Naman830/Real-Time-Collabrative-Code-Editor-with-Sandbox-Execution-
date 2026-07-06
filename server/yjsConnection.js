@@ -20,6 +20,14 @@ const saveTimers = new Map(); // roomId -> Timeout
 // each time a new client connects.
 const persistedRooms = new Set(); // roomId
 
+async function persistRoom(roomId, ydoc) {
+  const update = Buffer.from(Y.encodeStateAsUpdate(ydoc));
+  await prisma.room.update({
+    where: { id: roomId },
+    data: { ydocState: update },
+  });
+}
+
 function schedulePersist(roomId, ydoc) {
   clearTimeout(saveTimers.get(roomId));
   saveTimers.set(
@@ -27,16 +35,27 @@ function schedulePersist(roomId, ydoc) {
     setTimeout(async () => {
       saveTimers.delete(roomId);
       try {
-        const update = Buffer.from(Y.encodeStateAsUpdate(ydoc));
-        await prisma.room.update({
-          where: { id: roomId },
-          data: { ydocState: update },
-        });
+        await persistRoom(roomId, ydoc);
       } catch (err) {
         console.error(`Failed to persist room "${roomId}" to Postgres:`, err);
       }
     }, PERSIST_DEBOUNCE_MS)
   );
+}
+
+// Called when a room's last WebSocket client disconnects. Cancels whatever
+// debounce timer is pending and writes immediately, so a room that goes
+// idle isn't left waiting out PERSIST_DEBOUNCE_MS with no client left to
+// generate the update that would otherwise trigger that write.
+function flushPersist(roomId, ydoc) {
+  clearTimeout(saveTimers.get(roomId));
+  saveTimers.delete(roomId);
+  persistRoom(roomId, ydoc).catch((err) => {
+    console.error(
+      `Failed to flush room "${roomId}" to Postgres on last disconnect:`,
+      err
+    );
+  });
 }
 
 async function handleYjsConnection(ws, req) {
@@ -79,6 +98,18 @@ async function handleYjsConnection(ws, req) {
   }
 
   setupWSConnection(ws, req, { docName: roomId });
+
+  // setupWSConnection already registered its own "close" handler, which
+  // removes this connection from ydoc.conns synchronously before any
+  // handler added afterwards runs. So by the time this fires, ydoc.conns
+  // reflects the post-disconnect count, and size 0 means this really was
+  // the room's last client.
+  ws.on("close", () => {
+    if (ydoc.conns.size === 0) {
+      flushPersist(roomId, ydoc);
+    }
+  });
+
   ws.resume();
 }
 
