@@ -2,7 +2,7 @@
 
 A collaborative code editor with real-time multi-cursor sync (CRDT-based) and secure sandboxed code execution — built to explore distributed state management and execution isolation at scale.
 
-🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time multi-tab sync is now live via Yjs + y-websocket + the standalone WebSocket server, with independent per-room documents via URL-based room routing; live multi-cursor presence (via Yjs awareness) is also working; Postgres (via Prisma + Neon) is connected and now wired into the full connection lifecycle — a room's persisted state, if any, loads into the in-memory `Y.Doc` before a new client's initial sync, edits are written back with a per-room debounced snapshot, and a room's last disconnecting client now flushes that snapshot immediately instead of waiting out the debounce window, so state now survives a server restart; code execution is being carved out of the Next.js app into its own standalone service, `exec-server/` — currently a bare passthrough proxy to Piston with no queue yet; Redis is not wired up yet.
+🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time multi-tab sync is now live via Yjs + y-websocket + the standalone WebSocket server, with independent per-room documents via URL-based room routing; live multi-cursor presence (via Yjs awareness) is also working; Postgres (via Prisma + Neon) is connected and now wired into the full connection lifecycle — a room's persisted state, if any, loads into the in-memory `Y.Doc` before a new client's initial sync, edits are written back with a per-room debounced snapshot, and a room's last disconnecting client now flushes that snapshot immediately instead of waiting out the debounce window, so state now survives a server restart; code execution now runs through its own standalone service, `exec-server/` — the Next.js app calls `exec-server/`, which is currently a bare passthrough proxy to Piston with no queue yet; Redis is not wired up yet.
 
 ---
 
@@ -54,7 +54,7 @@ The Next.js frontend holds a `Y.Doc` per editor session, bound to the Monaco edi
 
 **WebSocket server:** deployed on Railway, URL: `collabrativecodeeditor-production.up.railway.app`
 
-Code execution is being pulled out of the Next.js app into its own standalone service, `exec-server/` (see [Execution Service](#execution-service) below). For now the Next.js `/api/execute` route and `exec-server/`'s `/execute` both exist side by side; the Next.js route still does the actual language→Piston mapping the editor relies on, while `exec-server/` is a bare proxy establishing the deploy target the queueing logic will land on next.
+Code execution has been pulled out of the Next.js app into its own standalone service, `exec-server/` (see [Execution Service](#execution-service) below). The Next.js `/api/execute` route still does the language→Piston mapping the editor relies on, but now forwards the mapped request to `exec-server/`'s `/execute` endpoint instead of calling Piston directly; `exec-server/` in turn proxies straight through to Piston. The execution path is now Next.js → `exec-server/` → Piston.
 
 **Why editing sync and code execution are separate systems, and why execution is now its own service rather than living inside the Next.js app:**
 There are deliberately three separate failure domains now: the Next.js app (editor UI), the WebSocket server (`server/`, editing sync), and the execution service (`exec-server/`, code running). Editing sync needs to be low-latency and always-on — every keystroke matters, and a slow or crashed execution request must never degrade it for every user in the room. Execution is bursty, resource-heavy, and runs untrusted input — it needs strict isolation not just from the sync path but from the app server itself, since it's the piece most likely to need its own scaling, queueing, and resource limits (CPU/memory/time caps) as usage grows. Keeping all three decoupled lets each scale, fail, and recover independently, instead of one noisy neighbor taking the others down with it.
@@ -172,7 +172,7 @@ A standalone Express server, `exec-server/`, is the new home for code execution 
 
 **Why this exists as its own step, before any queueing logic:** establishing the service boundary and deploy target first — as a working, deployable proxy — means the request queue (rate limiting, concurrency caps, retry/backoff) can be layered on top of something already running in production, rather than designed in the abstract. It also means the three services (Next.js app, WS sync server, execution server) are now three separate failure domains on purpose: an execution spike or crash can't take down live editing or the app itself, and vice versa.
 
-Both `PORT` and the Piston URL (`PISTON_API_URL`) are env-configurable (see `exec-server/.env.example`), the same pattern `server/` and the Next.js app already use, so each environment (local Docker Compose Piston vs. a deployed instance) just needs a different `.env`.
+Both `PORT` and the Piston URL (`PISTON_API_URL`) are env-configurable (see `exec-server/.env.example`), the same pattern `server/` and the Next.js app already use for their own upstream URLs (the Next.js app now points at `exec-server/` via its own `EXEC_SERVER_API_URL` var), so each environment (local Docker Compose Piston vs. a deployed instance) just needs a different `.env`.
 
 ---
 
@@ -190,9 +190,11 @@ docker compose up -d
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000), write some code in the editor, pick a language, and hit **Run** — it's forwarded to `/api/execute`, which relays it to the local Piston container and streams back stdout/stderr/exit code.
+Also start `exec-server/` (see [Execution server](#execution-server) below) — the Next.js app now proxies execution requests to it rather than calling Piston directly.
 
-By default the app talks to Piston at `http://localhost:2000`. Override with a `PISTON_API_URL` env var if you're running Piston elsewhere.
+Open [http://localhost:3000](http://localhost:3000), write some code in the editor, pick a language, and hit **Run** — it's forwarded to `/api/execute`, which relays it to `exec-server/` (see [Execution Service](#execution-service) below), which in turn relays it to the local Piston container and streams back stdout/stderr/exit code. The execution path is Next.js → `exec-server/` → Piston.
+
+By default the app talks to `exec-server/` at `http://localhost:4000`. Override with an `EXEC_SERVER_API_URL` env var if you're running `exec-server/` elsewhere.
 
 ### WebSocket server (Yjs sync)
 
@@ -244,6 +246,7 @@ It listens on `PORT` from `.env` (default `4000`) and proxies to `PISTON_API_URL
 - [x] Presence indicators and live cursor labels (Yjs awareness)
 - [x] Room persistence with Postgres — loading state on connect, debounced snapshot writes, and flush-on-last-disconnect are all done
 - [x] Standalone execution service (`exec-server/`) — bare passthrough proxy to Piston, establishing the service boundary and deploy target
+- [x] Next.js `/api/execute` now calls `exec-server/` instead of Piston directly
 - [ ] Reconnect/resync handling
 - [ ] Execution request queue + resource limits, on top of `exec-server/`
 - [ ] Redis pub/sub for horizontal scaling

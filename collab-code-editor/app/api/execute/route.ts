@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-const PISTON_EXECUTE_URL = `${process.env.PISTON_API_URL ?? "http://localhost:2000"}/api/v2/execute`;
+const EXEC_SERVER_EXECUTE_URL = `${process.env.EXEC_SERVER_API_URL ?? "http://localhost:4000"}/execute`;
 
 // Pinned against Piston's /runtimes output for the languages in the editor's
 // language switcher. Update these if Piston drops support for a version.
@@ -56,9 +56,9 @@ export async function POST(request: Request) {
     );
   }
 
-  let pistonRes: Response;
+  let execRes: Response;
   try {
-    pistonRes = await fetch(PISTON_EXECUTE_URL, {
+    execRes = await fetch(EXEC_SERVER_EXECUTE_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -76,7 +76,7 @@ export async function POST(request: Request) {
 
   let data: PistonResponse;
   try {
-    data = await pistonRes.json();
+    data = await execRes.json();
   } catch {
     return NextResponse.json(
       { success: false, error: "Code execution service returned an invalid response." },
@@ -84,7 +84,7 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!pistonRes.ok) {
+  if (!execRes.ok) {
     return NextResponse.json(
       { success: false, error: data.message ?? "Code execution service returned an error." },
       { status: 502 }
