@@ -2,7 +2,7 @@
 
 A collaborative code editor with real-time multi-cursor sync (CRDT-based) and secure sandboxed code execution — built to explore distributed state management and execution isolation at scale.
 
-🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time multi-tab sync is now live via Yjs + y-websocket + the standalone WebSocket server, with independent per-room documents via URL-based room routing; live multi-cursor presence (via Yjs awareness) is also working; Postgres (via Prisma + Neon) is connected and now wired into the connection lifecycle — a room's persisted state, if any, loads into the in-memory `Y.Doc` before a new client's initial sync; snapshot *writes* back to Postgres (debounced) are not implemented yet, so state doesn't yet survive a server restart; Redis is not wired up yet.
+🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time multi-tab sync is now live via Yjs + y-websocket + the standalone WebSocket server, with independent per-room documents via URL-based room routing; live multi-cursor presence (via Yjs awareness) is also working; Postgres (via Prisma + Neon) is connected and now wired into the full connection lifecycle — a room's persisted state, if any, loads into the in-memory `Y.Doc` before a new client's initial sync, and edits are written back with a per-room debounced snapshot, so state now survives a server restart; Redis is not wired up yet.
 
 ---
 
@@ -28,7 +28,7 @@ What makes it technically interesting: keeping edit state consistent across mult
 - [x] Real-time multi-cursor editing
 - [x] Presence indicators (who's online, where they're looking) — via Yjs's awareness protocol
 - [x] Sandboxed code execution (JavaScript, TypeScript, Python, Java, C++ via a self-hosted Piston instance)
-- [ ] Room persistence (reload without losing state) — `Room` schema + migration in place, and loading persisted state into a room on connect is now wired in ([details](#persistence)); snapshot writes back to Postgres are still pending, so state doesn't survive a server restart yet
+- [x] Room persistence (reload without losing state) — `Room` schema + migration in place; loading persisted state into a room on connect, and writing it back via a per-room debounced snapshot, are both wired in ([details](#persistence))
 
 ---
 
@@ -49,7 +49,7 @@ What makes it technically interesting: keeping edit state consistent across mult
 ## Architecture
 *Diagram image coming soon — described in text below in the meantime.*
 
-The Next.js frontend holds a `Y.Doc` per editor session, bound to the Monaco editor via `y-monaco`. A `WebsocketProvider` (from `y-websocket`) connects that same `Y.Doc` to the standalone Node.js WebSocket server in `server/`, which speaks the Yjs sync protocol (via `y-websocket`'s server-side `setupWSConnection` utility) instead of a custom message format. Landing on `/` shows a room-join screen where you enter a room ID or generate a new one; that ID becomes the dynamic route segment for `/room/[roomId]` and is passed as the Yjs document name to both the `Y.Doc` setup and the `WebsocketProvider`, so each room gets its own independent, isolated CRDT document — two tabs on the same room ID converge in real time, and a tab on a different room ID never sees those edits. Each client also broadcasts live cursor/selection presence via Yjs's awareness protocol (see [Presence: Multi-Cursor Awareness](#presence-multi-cursor-awareness) below). On each new connection, the WS server now loads that room's persisted state (if any) from Postgres into the in-memory `Y.Doc` before the connecting client's initial sync (see [Persistence](#persistence) below); writing snapshots back to Postgres is not implemented yet, so state still does not survive a server restart.
+The Next.js frontend holds a `Y.Doc` per editor session, bound to the Monaco editor via `y-monaco`. A `WebsocketProvider` (from `y-websocket`) connects that same `Y.Doc` to the standalone Node.js WebSocket server in `server/`, which speaks the Yjs sync protocol (via `y-websocket`'s server-side `setupWSConnection` utility) instead of a custom message format. Landing on `/` shows a room-join screen where you enter a room ID or generate a new one; that ID becomes the dynamic route segment for `/room/[roomId]` and is passed as the Yjs document name to both the `Y.Doc` setup and the `WebsocketProvider`, so each room gets its own independent, isolated CRDT document — two tabs on the same room ID converge in real time, and a tab on a different room ID never sees those edits. Each client also broadcasts live cursor/selection presence via Yjs's awareness protocol (see [Presence: Multi-Cursor Awareness](#presence-multi-cursor-awareness) below). On each new connection, the WS server now loads that room's persisted state (if any) from Postgres into the in-memory `Y.Doc` before the connecting client's initial sync, and every subsequent edit is written back with a per-room debounced snapshot (see [Persistence](#persistence) below), so state now survives a server restart.
 
 **WebSocket server:** deployed on Railway, URL: `collabrativecodeeditor-production.up.railway.app`
 
@@ -119,10 +119,20 @@ Room documents are persisted to Postgres (hosted on [Neon](https://neon.tech)) v
 
 **This load must happen before step 3, not after.** `setupWSConnection` sends sync step 1 synchronously, from whatever is currently in the in-memory doc — it has no awareness of Postgres. If the Postgres read happened after (or concurrently with) that send, a fast client could complete its initial sync against an empty/stale doc, before the persisted state arrived — the client would render nothing (or an old snapshot in memory from a previous session on the same server run) until some later, unrelated event triggered a re-sync, if ever. Because the DB read is async and `ws` starts feeding buffered socket data to `y-websocket`'s message handler as soon as it's attached, the connection is also paused via `ws.pause()` before the Postgres call and resumed via `ws.resume()` only after the state has been applied and `setupWSConnection` has run — this closes the gap where a client's own first message could otherwise be processed (or its sync step 1 sent) before the loaded state is in the doc.
 
+**Saving state back (implemented).** `server/yjsConnection.js` also attaches a listener to each room's shared `Y.Doc` (once per room, guarded by a `Set`, since `getYDoc` returns the same instance for every connection to that room):
+
+1. Every Yjs `update` event on the doc calls `schedulePersist(roomId, ydoc)`, which clears any pending timer for that room and starts a new one.
+2. If 4 seconds pass with no further updates to that room, the timer fires: `Y.encodeStateAsUpdate(ydoc)` is serialized and written to that room's `ydocState` column via `prisma.room.update`.
+3. Timers are tracked per room id in a `Map`, so typing in one room never delays (or triggers) a save in another — each room's debounce window is independent.
+
 Two persistence-related decisions:
 
 - **Auto-create-on-connect (implemented).** A `Room` row is created lazily on first connection to a given room id, rather than requiring rooms to be explicitly provisioned through a separate API call. *Rationale: room ids are freely chosen by users on the landing page (typed or generated) with no pre-registration step, so the WS server is the natural place to guarantee a row exists before state is read or written for that id.*
-- **Debounced snapshot + disconnect flush (not yet implemented).** Instead of writing to Postgres on every Yjs update (far too frequent — every keystroke would trigger a write), the server will debounce snapshot writes to a short delay after the last edit, and additionally flush a snapshot immediately when the last client disconnects from a room. *Rationale: bounds write volume to roughly one write per pause-in-typing or per session end, while still guaranteeing durable state before a room goes idle.* Until this lands, `ydocState` is only ever populated by whatever is manually written to it — nothing in the live flow writes it yet, so restarting the server still loses in-progress edits.
+- **Debounced snapshot, 4-second window (implemented).** Instead of writing to Postgres on every Yjs update (far too frequent — every keystroke would trigger a write), the server debounces snapshot writes to 4 seconds after the *last* edit to a given room. *Why 4 seconds specifically:* it's long enough to collapse a burst of rapid keystrokes (or a paste, or an AI-assisted large edit) into a single write, but short enough that the amount of unsaved work lost if the process crashes stays small and bounded. The trade-off is a direct dial between two costs that move in opposite directions:
+  - **Shorter debounce (e.g. 500ms–1s)** → smaller data-loss window if the server crashes mid-session, but more frequent writes to Postgres. A room with continuous typing would issue a write roughly every debounce interval, since each new keystroke keeps resetting the timer only until the user briefly pauses — busy rooms would still batch reasonably well, but idle-then-type-then-idle patterns would write more often and each write recomputes/serializes the *entire* doc state (`Y.encodeStateAsUpdate` returns the full state, not just the delta), so more writes also means more bytes shipped to Neon over time.
+  - **Longer debounce (e.g. 15–30s)** → far fewer writes and lower load on the Postgres connection pool (relevant since Neon's pooled connection is shared across all rooms on this server instance), but a bigger window of edits that only exist in-memory and would be lost on an ungraceful crash (a graceful shutdown could still flush all pending timers, but that's not yet implemented — see below).
+  - 4 seconds was chosen as a middle ground for a pair-programming/interview use case: sessions are typically short-lived and conversational (natural pauses between edits are common), so a few seconds of debounce rarely coincides with a hard crash, while keeping writes infrequent enough not to stress a single shared Postgres connection across many concurrent rooms.
+  - **Not yet implemented:** a flush-on-disconnect (or on process shutdown) to eliminate the remaining data-loss window entirely for the common case of a room simply going idle or the server restarting gracefully, rather than relying on the debounce timer alone.
 
 ---
 
@@ -179,7 +189,7 @@ npx prisma generate      # regenerates the Prisma Client, if needed
 - [x] Real-time multi-tab sync (Yjs + `y-websocket` + WebSocket server)
 - [x] Room routing (`/room/[roomId]`, joined/created from a landing screen)
 - [x] Presence indicators and live cursor labels (Yjs awareness)
-- [ ] Room persistence with Postgres — loading state on connect is done; debounced snapshot writes are still pending
+- [x] Room persistence with Postgres — loading state on connect and debounced snapshot writes are both done; flush-on-disconnect is still pending
 - [ ] Reconnect/resync handling
 - [ ] Execution resource limits + worker queue
 - [ ] Redis pub/sub for horizontal scaling
