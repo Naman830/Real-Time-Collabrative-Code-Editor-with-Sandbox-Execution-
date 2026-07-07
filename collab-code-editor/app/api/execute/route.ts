@@ -88,6 +88,18 @@ export async function POST(request: Request) {
     );
   }
 
+  // exec-server's express.json() rejects bodies over its ~100kb default with
+  // an HTML error page, which previously surfaced here as a confusing
+  // "invalid response" 502. Cap the code size before forwarding so the user
+  // gets a clear message instead. 64 KiB leaves room for the JSON envelope.
+  const MAX_CODE_BYTES = 64 * 1024;
+  if (new TextEncoder().encode(code).length > MAX_CODE_BYTES) {
+    return NextResponse.json(
+      { success: false, kind: "error", error: "Code is too large to execute (max 64 KB)." },
+      { status: 413 }
+    );
+  }
+
   const mapping = LANGUAGE_MAP[language];
   if (!mapping) {
     return NextResponse.json(

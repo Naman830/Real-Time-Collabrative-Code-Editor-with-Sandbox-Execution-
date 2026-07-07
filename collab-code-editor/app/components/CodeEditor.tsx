@@ -240,9 +240,29 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
       const { WebsocketProvider } = await import("y-websocket");
       if (cancelled) return null;
 
-      provider = new WebsocketProvider(WS_URL, roomId, yDoc);
+      // y-websocket appends the room name to the URL verbatim — a room id
+      // containing "#", "?", or spaces would produce an invalid WebSocket URL
+      // and throw, so it must be percent-encoded here. The server uses the
+      // encoded path segment as the room's persistence key, which stays
+      // identical for ids that need no encoding.
+      provider = new WebsocketProvider(WS_URL, encodeURIComponent(roomId), yDoc);
       provider.on("status", ({ status }: { status: SyncStatus }) => {
         setSyncStatus(status);
+      });
+
+      // Seed the default snippet only after the initial server sync reports
+      // the room is genuinely empty. Seeding at editor mount raced this sync:
+      // a client rejoining an existing room would see an empty local doc,
+      // insert a second copy of DEFAULT_CODE, and CRDT-merge it with the
+      // persisted one. "sync" also fires on reconnect, so the length guard
+      // keeps this idempotent.
+      provider.on("sync", (isSynced: boolean) => {
+        if (isSynced) {
+          const yText = yDoc.getText("monaco");
+          if (yText.length === 0) {
+            yText.insert(0, DEFAULT_CODE);
+          }
+        }
       });
 
       // Reuse the awareness instance the provider already creates — assign
@@ -275,10 +295,6 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
 
   const handleEditorMount: OnMount = async (editor) => {
     const yText = yDoc.getText("monaco");
-    if (yText.length === 0) {
-      yText.insert(0, DEFAULT_CODE);
-    }
-
     const model = editor.getModel();
     if (model) {
       // y-monaco pulls in raw monaco-editor, which touches `window` at
@@ -354,11 +370,12 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
 
   const isInFlight = runState.status === "queued" || runState.status === "running";
 
+  // Trust exec-server's classification rather than re-deriving failure from
+  // stderr: a program can write warnings to stderr and still exit 0, and
+  // labeling that "Exited with error" next to "Exit code: 0" contradicted
+  // itself. stderr is still rendered in red below either way.
   const hasRuntimeFailure =
-    runState.status === "completed" &&
-    ((runState.result.compile && runState.result.compile.exitCode !== 0) ||
-      runState.result.exitCode !== 0 ||
-      runState.result.stderr.length > 0);
+    runState.status === "completed" && runState.result.status !== "success";
 
   const statusKind = getStatusKind(runState, hasRuntimeFailure);
   const panelClass = statusKind ? STATUS_STYLES[statusKind].panel : "border-zinc-800 bg-black";
