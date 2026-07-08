@@ -5,6 +5,7 @@
 const Y = require("yjs");
 const { setupWSConnection, getYDoc } = require("y-websocket/bin/utils");
 const { prisma } = require("./prismaClient");
+const { startRoomSync, stopRoomSync } = require("./redis/sync");
 
 // 4s of quiet time before a room's doc is flushed to Postgres. See README.md
 // ("Persistence debounce") for the reasoning behind this value.
@@ -97,6 +98,12 @@ async function handleYjsConnection(ws, req) {
     ydoc.on("update", () => schedulePersist(roomId, ydoc));
   }
 
+  // Independent of the persistence listener above: wires up the (not yet
+  // implemented) cross-instance Redis sync. startRoomSync attaches its own
+  // separate "update" listener and guards against duplicate attachment
+  // itself, so it's safe to call on every connection to this room.
+  startRoomSync(roomId, ydoc);
+
   setupWSConnection(ws, req, { docName: roomId });
 
   // setupWSConnection already registered its own "close" handler, which
@@ -107,6 +114,7 @@ async function handleYjsConnection(ws, req) {
   ws.on("close", () => {
     if (ydoc.conns.size === 0) {
       flushPersist(roomId, ydoc);
+      stopRoomSync(roomId, ydoc);
     }
   });
 

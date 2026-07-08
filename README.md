@@ -2,7 +2,7 @@
 
 A collaborative code editor with real-time multi-cursor sync (CRDT-based) and secure sandboxed code execution — built to explore distributed state management and execution isolation at scale.
 
-🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time multi-tab sync is now live via Yjs + y-websocket + the standalone WebSocket server, with independent per-room documents via URL-based room routing; live multi-cursor presence (via Yjs awareness) is also working; Postgres (via Prisma + Neon) is connected and now wired into the full connection lifecycle — a room's persisted state, if any, loads into the in-memory `Y.Doc` before a new client's initial sync, edits are written back with a per-room debounced snapshot, and a room's last disconnecting client now flushes that snapshot immediately instead of waiting out the debounce window, so state now survives a server restart; code execution now runs through its own standalone service, `exec-server/` — the Next.js app calls `exec-server/`, which is currently a bare passthrough proxy to Piston with no queue yet; Redis is not wired up yet.
+🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time multi-tab sync is now live via Yjs + y-websocket + the standalone WebSocket server, with independent per-room documents via URL-based room routing; live multi-cursor presence (via Yjs awareness) is also working; Postgres (via Prisma + Neon) is connected and now wired into the full connection lifecycle — a room's persisted state, if any, loads into the in-memory `Y.Doc` before a new client's initial sync, edits are written back with a per-room debounced snapshot, and a room's last disconnecting client now flushes that snapshot immediately instead of waiting out the debounce window, so state now survives a server restart; code execution now runs through its own standalone service, `exec-server/` — the Next.js app calls `exec-server/`, which is currently a bare passthrough proxy to Piston with no queue yet; Redis pub/sub for cross-instance sync is scaffolded (client, channel naming, and a connection hook on each room's `Y.Doc`) but not implemented yet — see [Cross-Instance Sync](#cross-instance-sync-scaffold).
 
 ---
 
@@ -163,6 +163,22 @@ No automated tests cover the WS server yet, so verify persistence by hand after 
 
 ---
 
+## Cross-Instance Sync (scaffold)
+
+A single WebSocket server instance holds every room's `Y.Doc` in memory, so today two clients only converge in real time if they happen to land on the *same* instance — the [WebSocket scaling](#key-technical-challenges) problem. The fix is Redis pub/sub: each instance publishes its local updates to a per-room channel and applies updates other instances publish, so clients on different instances still converge. That part is **scaffolded, not implemented** — the pieces exist and are wired together, but the actual publish/subscribe calls are still TODOs.
+
+What's in place, all in `server/`:
+
+- **`redis/client.js`** — two `ioredis` connections (`publisher`, `subscriber`) against `REDIS_URL` (an Upstash TCP endpoint, not the REST API — a pub/sub `SUBSCRIBE` needs a persistent connection, which the REST API can't hold open). Split into two connections because a connection that issues `SUBSCRIBE` can no longer run other commands.
+- **`redis/channels.js`** — the channel naming scheme (`syncChannel(roomId)` → `room:<roomId>:sync`, one channel per room) and the `SyncEnvelope` shape (`{ roomId, update, originInstanceId }`) that will eventually go over the wire.
+- **`instanceId.js`** — a `crypto.randomUUID()` generated once per server process (`INSTANCE_ID`), so an instance can eventually recognize and drop its own updates echoing back from Redis.
+- **`redis/sync.js`** — `startRoomSync(roomId, ydoc)` / `stopRoomSync(roomId, ydoc)`. `startRoomSync` attaches a **second, independent `"update"` listener** to the room's `Y.Doc` — separate from (and not chained off) the debounced-snapshot listener described in [Persistence](#persistence) above, guarded the same way against duplicate attachment across multiple connections to the same room. `stopRoomSync` detaches it. `server/yjsConnection.js`'s `handleYjsConnection` now calls `startRoomSync` when a room starts being hosted and `stopRoomSync` on that room's last disconnect, alongside (not touching) the existing persistence hooks.
+- Inside that listener sits `// TODO(core-logic): publish this update + this instance's ID to Redis on the room's channel` — the actual `publisher.publish(...)` call, the subscribe-and-apply side, and echo-loop prevention (telling "update that originated here" apart from "update that just arrived from Redis") are all still open, called out as `TODO(core-logic)` comments in `redis/sync.js`.
+
+*Setup instructions (`REDIS_URL` etc.) will be added once the publish/subscribe logic is actually implemented.*
+
+---
+
 ## Execution Service
 
 A standalone Express server, `exec-server/`, is the new home for code execution — sibling to `collab-code-editor/` and `server/`. Right now it's deliberately minimal: a bare passthrough.
@@ -263,7 +279,7 @@ npx prisma generate      # regenerates the Prisma Client, if needed
 
 `DATABASE_URL` (Neon's pooled/PgBouncer connection) is used by Prisma Client at runtime via the `@prisma/adapter-pg` driver adapter; `DIRECT_URL` (Neon's direct, non-pooled connection) is used only by `prisma migrate`, since PgBouncer's transaction-mode pooling doesn't support the session-level advisory locks Migrate needs.
 
-*Redis isn't wired up yet — setup instructions will be added once it comes online.*
+*Redis pub/sub is scaffolded but not implemented yet — see [Cross-Instance Sync](#cross-instance-sync-scaffold). Setup instructions will be added once the publish/subscribe logic is in place.*
 
 ### Execution server
 
@@ -292,7 +308,7 @@ It listens on `PORT` from `.env` (default `4000`) and proxies to `PISTON_API_URL
 - [x] Next.js `/api/execute` now calls `exec-server/` instead of Piston directly
 - [ ] Reconnect/resync handling
 - [ ] Execution request queue + resource limits, on top of `exec-server/`
-- [ ] Redis pub/sub for horizontal scaling
+- [ ] Redis pub/sub for horizontal scaling — client, channel design, and the `Y.Doc` connection hook are scaffolded ([details](#cross-instance-sync-scaffold)); publish/subscribe logic itself is still TODO
 - [ ] Deploy live demo (Vercel + Railway/Render)
 
 ---
