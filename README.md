@@ -2,7 +2,7 @@
 
 A collaborative code editor with real-time multi-cursor sync (CRDT-based) and secure sandboxed code execution — built to explore distributed state management and execution isolation at scale.
 
-🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time multi-tab sync is now live via Yjs + y-websocket + the standalone WebSocket server, with independent per-room documents via URL-based room routing; live multi-cursor presence (via Yjs awareness) is also working; Postgres (via Prisma + Neon) is connected and now wired into the full connection lifecycle — a room's persisted state, if any, loads into the in-memory `Y.Doc` before a new client's initial sync, edits are written back with a per-room debounced snapshot, and a room's last disconnecting client now flushes that snapshot immediately instead of waiting out the debounce window, so state now survives a server restart; code execution now runs through its own standalone service, `exec-server/` — the Next.js app calls `exec-server/`, which is currently a bare passthrough proxy to Piston with no queue yet; Redis pub/sub for cross-instance sync is scaffolded (client, channel naming, a publish hook on each room's `Y.Doc`, and now a subscribe-and-apply stub — with the subscribe-vs-snapshot-load-vs-client-sync ordering decision deliberately left open) but not implemented yet — see [Cross-Instance Sync](#cross-instance-sync-scaffold).
+🚧 Status: In Progress — single-user editor with sandboxed execution is working locally; real-time multi-tab sync is now live via Yjs + y-websocket + the standalone WebSocket server, with independent per-room documents via URL-based room routing; live multi-cursor presence (via Yjs awareness) is also working; Postgres (via Prisma + Neon) is connected and now wired into the full connection lifecycle — a room's persisted state, if any, loads into the in-memory `Y.Doc` before a new client's initial sync, edits are written back with a per-room debounced snapshot, and a room's last disconnecting client now flushes that snapshot immediately instead of waiting out the debounce window, so state now survives a server restart; code execution now runs through its own standalone service, `exec-server/` — the Next.js app calls `exec-server/`, which is currently a bare passthrough proxy to Piston with no queue yet; Redis pub/sub for cross-instance sync is scaffolded (client, channel naming, a publish hook on each room's `Y.Doc`, and now a subscribe-and-apply stub — with the subscribe-vs-snapshot-load-vs-client-sync ordering decision deliberately left open) but not implemented yet; local tooling to run two `server/` instances side-by-side for manual testing of that relay (`npm run dev:cluster`, plus a dev-only `?wsPort=` override on the frontend) is now in place — see [Cross-Instance Sync](#cross-instance-sync-scaffold).
 
 ---
 
@@ -183,6 +183,14 @@ What's in place, all in `server/`:
 
 *Setup instructions (`REDIS_URL` etc.) will be added once the publish/subscribe logic is actually implemented.*
 
+### Manual Multi-Instance Testing
+
+The publish/subscribe logic above is still TODO, so running two instances today won't show live convergence yet — but the tooling to do so is in place now, ready for the moment that logic lands, rather than needing to be built under pressure then.
+
+- **`server/`**: `npm run dev:cluster` uses `concurrently` to run two copies of `index.js` side by side, on `PORT=8080` and `PORT=8081`, both reading the same `.env` — so both point at the same Postgres and Redis. Each process still gets its own `INSTANCE_ID` (`instanceId.js`), so once the relay is wired up, each instance can tell its own published updates apart from the other's.
+- **Frontend**: append `?wsPort=8081` to a room URL (e.g. `http://localhost:3000/room/test-room?wsPort=8081`) to point just that browser tab at the second instance; leave a second tab on the same room ID without the query param to keep it on the default instance (`NEXT_PUBLIC_WS_URL`, `ws://localhost:8080` locally). The override (`resolveWsUrl` in `CodeEditor.tsx`) only ever changes which WS URL the client requests — it's inert outside `next dev` (compiled out of production builds) and doesn't touch any sync, awareness, or persistence logic.
+- **What to expect right now:** two tabs on the same room but different instances will *not* converge live — that's exactly the gap [Cross-Instance Sync](#cross-instance-sync-scaffold) above describes. Each instance still independently persists to the same Postgres row via its own debounced snapshot, so reconnecting or refreshing a tab will eventually reflect whichever instance wrote most recently. This setup makes that gap directly observable, and doubles as the manual test for the real publish/subscribe implementation once it's built.
+
 ---
 
 ## Execution Service
@@ -272,7 +280,7 @@ cp .env.example .env
 npm run dev
 ```
 
-It listens on `PORT` from `.env` (default `8080`). Run it alongside the frontend (`npm run dev` in `collab-code-editor/`, pointed at it via `NEXT_PUBLIC_WS_URL`) to see edits sync live between browser tabs.
+It listens on `PORT` from `.env` (default `8080`). Run it alongside the frontend (`npm run dev` in `collab-code-editor/`, pointed at it via `NEXT_PUBLIC_WS_URL`) to see edits sync live between browser tabs. To run two instances at once for manual multi-instance testing, use `npm run dev:cluster` instead (see [Manual Multi-Instance Testing](#manual-multi-instance-testing)).
 
 **Database (Prisma + Neon Postgres):** the server also connects to a Neon Postgres database via Prisma (see [Persistence](#persistence) above for the schema). To set it up:
 
@@ -315,6 +323,7 @@ It listens on `PORT` from `.env` (default `4000`) and proxies to `PISTON_API_URL
 - [ ] Reconnect/resync handling
 - [ ] Execution request queue + resource limits, on top of `exec-server/`
 - [ ] Redis pub/sub for horizontal scaling — client, channel design, and the connection hooks for both the document relay and the awareness/presence relay are scaffolded ([details](#cross-instance-sync-scaffold)); publish/subscribe logic itself is still TODO
+- [x] Local multi-instance dev tooling (`npm run dev:cluster` in `server/`, a dev-only `?wsPort=` override on the frontend) — for manually testing the Redis relay above once it's implemented ([details](#manual-multi-instance-testing))
 - [ ] Deploy live demo (Vercel + Railway/Render)
 
 ---

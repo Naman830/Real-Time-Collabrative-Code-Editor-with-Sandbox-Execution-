@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "node index.js",
     "start": "node index.js",
+    "dev:cluster": "concurrently -k -n inst-8080,inst-8081 -c blue,magenta \"PORT=8080 node index.js\" \"PORT=8081 node index.js\"",
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
@@ -27,6 +28,7 @@
     "yjs": "^13.6.31"
   },
   "devDependencies": {
+    "concurrently": "^9.2.3",
     "prisma": "^7.8.0"
   }
 }

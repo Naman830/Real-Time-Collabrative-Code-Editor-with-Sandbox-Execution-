@@ -19,6 +19,27 @@ const DEFAULT_CODE = `console.log("Hello, world!");\n`;
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8080";
 
+// Dev-only escape hatch for manual multi-instance testing (see server/'s
+// `dev:cluster` script): open a room as usual, then add e.g. `?wsPort=8081`
+// to just that tab's URL to point it at a different local server/ instance
+// while every other tab still uses WS_URL. Stripped out in production
+// builds so it can never affect a deployed environment.
+function resolveWsUrl(): string {
+  if (process.env.NODE_ENV !== "development" || typeof window === "undefined") {
+    return WS_URL;
+  }
+  const portOverride = new URLSearchParams(window.location.search).get("wsPort");
+  if (!portOverride) return WS_URL;
+
+  try {
+    const url = new URL(WS_URL);
+    url.port = portOverride;
+    return url.toString();
+  } catch {
+    return WS_URL;
+  }
+}
+
 // Fixed palette so remote cursor colors stay legible on the vs-dark theme.
 const CURSOR_COLORS = [
   "#e57373",
@@ -245,7 +266,7 @@ export default function CodeEditor({ roomId }: CodeEditorProps) {
       // and throw, so it must be percent-encoded here. The server uses the
       // encoded path segment as the room's persistence key, which stays
       // identical for ids that need no encoding.
-      provider = new WebsocketProvider(WS_URL, encodeURIComponent(roomId), yDoc);
+      provider = new WebsocketProvider(resolveWsUrl(), encodeURIComponent(roomId), yDoc);
       provider.on("status", ({ status }: { status: SyncStatus }) => {
         setSyncStatus(status);
       });

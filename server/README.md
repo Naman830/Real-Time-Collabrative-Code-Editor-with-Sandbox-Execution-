@@ -12,3 +12,11 @@ npm run dev
 ```
 
 The server listens on `PORT` from `.env` (defaults to `8080` if unset).
+
+## Running two instances (manual multi-instance testing)
+
+```bash
+npm run dev:cluster
+```
+
+Starts two copies of `index.js` side by side via `concurrently`, on `PORT=8080` and `PORT=8081`, both reading the same `.env`. Useful for manually exercising anything that's supposed to behave consistently across server instances (e.g. the Redis cross-instance relay in `redis/`) — see the root README's [Manual Multi-Instance Testing](../README.md#manual-multi-instance-testing) section for how to point the frontend at each instance.
