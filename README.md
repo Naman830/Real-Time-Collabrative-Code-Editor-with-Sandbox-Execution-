@@ -249,6 +249,52 @@ No automated tests cover `exec-server`'s queue/worker-pool/timeout/resource-limi
 
 ---
 
+## v0.6 — Horizontal Scaling
+
+Redis pub/sub is now **fully implemented** for cross-instance awareness and document sync. Multiple WebSocket server instances can now relay both document updates and presence state (live cursors) through Redis, so clients connecting to *different* instances converge in real time on the same room.
+
+**What's new:**
+
+- **Redis pub/sub relay wired up:** each instance publishes its local updates to per-room channels (`room:<roomId>:sync` for document updates, `room:<roomId>:awareness` for cursor/presence updates) and subscribes to receive updates from other instances. On receive, updates are applied to the local `Y.Doc` and `Y.Awareness` respectively, so multi-instance convergence now works end-to-end. See `server/redis/sync.js` and `server/redis/awareness.js` for implementation details.
+- **Two-instance local test setup:** run `npm run dev:cluster` in `server/` to start two WebSocket instances side by side on ports `8080` and `8081`. Use `?wsPort=8081` on a room URL to point a browser tab at the second instance. Both instances share the same Postgres and Redis, so document and presence state now converges across instances in real time.
+- **Deferred to a later iteration:**
+  - **Execution server scaling:** `exec-server/` is still a bare passthrough proxy with no queue/worker pool yet. Adding request queueing, resource limits, and concurrent worker management (to prevent a single noisy execution from overwhelming the service) will land in a later version.
+  - **Room eviction:** rooms currently stay in memory indefinitely once hosted. A TTL/eviction policy to clean up idle rooms and reclaim memory will be added later.
+
+### Manual Test Checklist (v0.6 — Horizontal Scaling)
+
+Redis pub/sub for cross-instance sync is now live, so verify it works by hand. For all of these:
+1. Start `server/` with `npm run dev:cluster` (starts two instances on `8080` and `8081`).
+2. Run the frontend (`cd collab-code-editor && npm run dev`).
+3. Open two browser tabs on the same room: one without a query param (points to `8080`), one with `?wsPort=8081` (points to `8081`).
+
+**Tests:**
+
+1. **Document edits sync across two instances for the same room**
+   - [ ] In the tab on instance 8080, type or paste some text (e.g., `hello from 8080`).
+   - [ ] Confirm the text appears **immediately** in the tab on instance 8081 (the pub/sub relay should have delivered it in real time).
+   - [ ] Type or paste text in the 8081 tab (e.g., `hello from 8081`).
+   - [ ] Confirm it appears **immediately** in the 8080 tab.
+
+2. **Multi-cursor awareness syncs across two instances**
+   - [ ] In the 8080 tab, position the cursor at a specific line (e.g., line 5, column 10) — confirm a cursor decoration appears in the 8081 tab showing your position from 8080 with your name and color.
+   - [ ] Move the cursor around in the 8080 tab — confirm the remote cursor follows in real time in the 8081 tab.
+   - [ ] Repeat from the 8081 tab: move the cursor and confirm it appears and updates live in the 8080 tab.
+
+3. **A client disconnecting from one instance stops showing as present on the other**
+   - [ ] With both tabs open and connected, confirm remote cursors are visible in each tab.
+   - [ ] Close the 8080 tab abruptly (e.g., close the browser window or the tab itself, simulating an ungraceful disconnect).
+   - [ ] Confirm the remote cursor (from the 8080 client) **disappears immediately** in the remaining 8081 tab — the disconnect should propagate via the awareness relay and clear that client's presence state.
+
+4. **Restart one instance mid-session and confirm the room recovers correctly**
+   - [ ] With both tabs on the same room, make some edits in each tab to populate the document.
+   - [ ] Stop instance 8080 (e.g., `Ctrl+C` in the terminal where `npm run dev:cluster` is running).
+   - [ ] Confirm the 8080 tab shows a connection error (reconnecting/disconnected state) and the 8081 tab remains connected with all prior edits intact.
+   - [ ] Restart both instances with `npm run dev:cluster` again and refresh the 8080 tab.
+   - [ ] Confirm both tabs reload and converge to the same document content (loaded from Postgres, relayed through the pub/sub channels).
+
+---
+
 ## Local Setup / Installation
 
 ```bash
