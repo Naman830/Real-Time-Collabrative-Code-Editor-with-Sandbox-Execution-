@@ -98,7 +98,12 @@ function classifyResult(pistonResponse, limits) {
     return { stage: "run", ...runResult };
   }
 
-  return { stage: "run", status: STATUS.SUCCESS, detail: "completed successfully" };
+  // No compile stage and no run stage means Piston never actually executed
+  // anything (e.g. an error response body) — this is not a successful,
+  // output-less run. workerPool.js is expected to catch this earlier via
+  // pistonRes.ok, but that check living in a separate module makes this a
+  // fragile invariant, not a guarantee, so this fallback must not assume it.
+  return { stage: "run", status: STATUS.INTERNAL_ERROR, detail: "Piston response had no compile or run stage" };
 }
 
 module.exports = { classifyResult, STATUS };

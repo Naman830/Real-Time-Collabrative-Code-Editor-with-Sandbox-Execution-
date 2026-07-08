@@ -19,6 +19,30 @@ services:
       - piston_data:/piston
     tmpfs:
       - /piston/jobs:exec
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:2000/api/v2/runtimes', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot: installs every language package the editor needs (see
+  # LANGUAGE_MAP in app/api/execute/route.ts) once Piston is healthy, then
+  # exits. Installed packages persist in the piston_data volume, so this is
+  # a no-op (fast skip + verify) on every `docker compose up` after the
+  # first. This replaces what used to be a manual, easy-to-forget setup
+  # step — see scripts/install-piston-runtimes.js.
+  piston-init:
+    image: node:22-alpine
+    container_name: piston_init
+    depends_on:
+      piston:
+        condition: service_healthy
+    environment:
+      - PISTON_API_URL=http://piston:2000
+    volumes:
+      - ./scripts/install-piston-runtimes.js:/install.js:ro
+    command: ["node", "/install.js"]
+    restart: "no"
 
 volumes:
   piston_data:

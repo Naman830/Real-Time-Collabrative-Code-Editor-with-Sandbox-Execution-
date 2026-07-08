@@ -2,6 +2,18 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
+### Sandbox execution (Piston) setup
+
+Code execution runs through a self-hosted [Piston](https://github.com/engineer-man/piston) instance via `exec-server`. Bring it up with:
+
+```bash
+docker compose up -d
+```
+
+This starts the `piston` container and a one-shot `piston-init` service (`scripts/install-piston-runtimes.js`) that automatically installs every language package the editor's language switcher needs (see `LANGUAGE_MAP` in `app/api/execute/route.ts`) and verifies each one comes up as a runnable runtime before exiting. On a fresh volume this can take several minutes (Java and C++/gcc are the slowest). Installed packages persist in the `piston_data` volume, so this is a fast no-op on every subsequent `docker compose up`.
+
+If `docker logs piston_init` doesn't end with `all N runtimes verified available. done.`, code execution will silently return empty output instead of real stdout/stderr — check that log before assuming the editor itself is broken.
+
 First, run the development server:
 
 ```bash

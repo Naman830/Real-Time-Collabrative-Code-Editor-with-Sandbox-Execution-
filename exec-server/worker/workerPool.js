@@ -107,6 +107,20 @@ async function processJob(job) {
     return;
   }
 
+  // A non-2xx here means Piston never ran the job at all (e.g. an unknown
+  // language/version, or a malformed request) — its body has no
+  // compile/run stages, just an error message. classifyResult() can't
+  // distinguish that shape from "ran with nothing to report" on its own
+  // (see classifyResult.js), so that distinction has to be made here,
+  // before the response reaches it, or this resolves as a fake empty
+  // "success".
+  if (!pistonRes.ok) {
+    job.reject(
+      Object.assign(new Error(data?.message || `Piston returned ${pistonRes.status}`), { status: 502 })
+    );
+    return;
+  }
+
   const result = classifyResult(data, {
     compileMemoryLimitBytes: COMPILE_MEMORY_LIMIT_BYTES,
     runMemoryLimitBytes: RUN_MEMORY_LIMIT_BYTES,
